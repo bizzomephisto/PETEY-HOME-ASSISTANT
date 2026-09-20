@@ -1,0 +1,51 @@
+<div class="home-assistant-shell">
+  <header class="home-assistant-heading">
+    <div><span class="section-eyebrow">LOCAL SMART HOME MCP</span><h2>Home Assistant</h2><p>Use PETEY with devices exposed through Home Assistant Assist.</p></div>
+    <span id="home-assistant-badge" class="provider-badge">Checking…</span>
+  </header>
+
+  <section class="settings-card">
+    <h3>Connection</h3>
+    <label class="full-field"><span>Home Assistant address</span><input id="home-assistant-url" type="url" value="http://homeassistant.local:8123" autocomplete="url"></label>
+    <label class="full-field"><span>Long-lived access token</span><input id="home-assistant-token" type="password" placeholder="Leave blank to keep the saved token" autocomplete="off" spellcheck="false"></label>
+    <p class="hint">Saved as <code>HOMEASSISTANT_TOKEN</code> in PETEY’s private <code>.env</code> file. PETEY never returns or displays its value.</p>
+    <div class="inline-actions">
+      <button id="home-assistant-save-connect" class="primary-button" type="button">Save &amp; connect</button>
+      <button id="home-assistant-reconnect" class="secondary-button" type="button">Reconnect</button>
+      <button id="home-assistant-disconnect" class="text-button" type="button">Disconnect</button>
+      <button id="home-assistant-clear-token" class="text-button" type="button">Remove saved token</button>
+    </div>
+    <p id="home-assistant-status" class="wide-status" role="status"></p>
+    <p id="home-assistant-detail" class="hint"></p>
+  </section>
+
+  <section class="settings-card">
+    <label class="preference-row home-assistant-trust-row"><span><strong>Trust PETEY with device changes</strong><small>Run Home Assistant Assist actions immediately when your request clearly asks for them.</small></span><input id="home-assistant-trusted" type="checkbox" role="switch"></label>
+    <p class="hint">When off, state reads run immediately while device changes wait below for approval. Unknown MCP tools are never exposed.</p>
+  </section>
+
+  <section class="settings-card">
+    <div class="card-heading"><div><h3>Action review</h3><p id="home-assistant-review-note">Device changes wait here for approval and expire after ten minutes.</p></div><button id="home-assistant-refresh" class="icon-button" type="button" title="Refresh proposals">↻</button></div>
+    <div id="home-assistant-proposals" class="home-assistant-proposals"><p class="muted">No actions awaiting review.</p></div>
+    <pre id="home-assistant-result" class="rag-results" hidden></pre>
+  </section>
+
+  <section class="settings-card">
+    <div class="card-heading">
+      <div><h3>Entity vocabulary</h3><p>Teach PETEY the everyday names and meanings used in your home. Changes are saved together and do not rename anything in Home Assistant.</p></div>
+      <div class="inline-actions">
+        <button id="home-assistant-scan-entities" class="secondary-button" type="button">Scan exposed entities</button>
+        <button id="home-assistant-save-vocabulary" class="primary-button" type="button" disabled>Save all</button>
+      </div>
+    </div>
+    <label class="full-field home-assistant-entity-search"><span>Filter scanned entities</span><input id="home-assistant-entity-filter" type="search" placeholder="Name, domain, area, or alias" disabled></label>
+    <p id="home-assistant-vocabulary-status" class="wide-status" role="status">Scan Home Assistant to build the batch editor.</p>
+    <div id="home-assistant-entity-list" class="home-assistant-entity-list"></div>
+  </section>
+
+  <section class="settings-card">
+    <h3>Exposed devices</h3>
+    <p>Exposing entities controls what PETEY can see and control. Home Assistant 2026.9 asks about <strong>Control Home Assistant</strong> while adding the <strong>Model Context Protocol Server</strong> integration; it does not provide a later Options screen. The add-on connects only to the official <code>/api/mcp/assist</code> endpoint.</p>
+    <p class="hint">Home Assistant may use a technical domain that differs from the real device type. For example, automatic litter boxes commonly use the <code>vacuum</code> domain. PETEY uses the friendly entity name and should still call them litter boxes. Enabling a device integration does not expose every related sensor; expose each sensor you want Assist to share.</p>
+  </section>
+</div>

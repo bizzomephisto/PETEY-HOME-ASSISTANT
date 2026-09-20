@@ -1,0 +1,21 @@
+.home-assistant-shell { width: min(100%, 900px); margin: 0 auto; }
+.home-assistant-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+.home-assistant-heading h2, .home-assistant-heading p, .home-assistant-shell h3 { margin: 0; }
+.home-assistant-heading p, .home-assistant-shell .settings-card > p { margin-top: 6px; color: var(--muted); line-height: 1.6; }
+.home-assistant-shell .full-field { margin-top: 18px; }
+.home-assistant-trust-row { margin: 0; }
+.home-assistant-proposals { display: grid; gap: 12px; margin-top: 18px; }
+.home-assistant-proposal { padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }
+.home-assistant-proposal pre { max-height: 240px; overflow: auto; padding: 10px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.home-assistant-entity-search { margin-top: 18px; }
+.home-assistant-entity-list { display: grid; gap: 10px; max-height: 620px; margin-top: 14px; overflow: auto; }
+.home-assistant-entity-row { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(180px, 1fr) minmax(220px, 1.2fr); gap: 12px; align-items: end; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }
+.home-assistant-entity-row[hidden] { display: none; }
+.home-assistant-entity-row label, .home-assistant-entity-identity { display: grid; gap: 5px; min-width: 0; }
+.home-assistant-entity-row label > span, .home-assistant-entity-identity small { color: var(--muted); font-size: 12px; }
+.home-assistant-entity-row label small { font-weight: normal; }
+.home-assistant-entity-identity strong, .home-assistant-entity-identity small { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .home-assistant-heading, .home-assistant-shell .card-heading { align-items: stretch; flex-direction: column; }
+  .home-assistant-entity-row { grid-template-columns: 1fr; align-items: stretch; }
+}

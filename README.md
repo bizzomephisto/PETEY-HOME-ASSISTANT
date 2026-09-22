@@ -28,7 +28,7 @@ This add-on connects directly to `/api/mcp/assist`. It does not install or launc
 
 ## Install
 
-1. Download `petey-home-assistant-v1.1.0.zip` from the [latest release](https://github.com/bizzomephisto/PETEY-HOME-ASSISTANT/releases/latest).
+1. Download `petey-home-assistant-v1.1.1.zip` from the [latest release](https://github.com/bizzomephisto/PETEY-HOME-ASSISTANT/releases/latest).
 2. Extract the archive. It contains one folder named `home-assistant`.
 3. In PETEY, open **Add-ons** and select **Open add-ons folder**.
 4. Copy the complete `home-assistant` folder into that directory.

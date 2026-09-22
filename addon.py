@@ -30,7 +30,8 @@ HOME_INTENT = re.compile(
     r"\b(home assistant|smart home|device|devices|light|lights|lamp|switch|fan|"
     r"thermostat|climate|temperature|lock|door|garage|blind|blinds|cover|curtain|"
     r"media player|speaker|volume|humidifier|timer|shopping list|todo|to-do|"
-    r"broadcast|scene|vacuum|mower|litter|litter box|cat|pet|waste drawer|sensor|"
+    r"broadcast|scene|vacuum|mower|litter|litter box|litterbox|litter-box|"
+    r"litter robot|cat|pet|waste drawer|sensor|"
     r"battery|status|level|weight|weigh|weighs|visit|visits|poop|poops|hopper)\b",
     re.IGNORECASE,
 )

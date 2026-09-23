@@ -3,6 +3,10 @@
 .home-assistant-heading h2, .home-assistant-heading p, .home-assistant-shell h3 { margin: 0; }
 .home-assistant-heading p, .home-assistant-shell .settings-card > p { margin-top: 6px; color: var(--muted); line-height: 1.6; }
 .home-assistant-shell .full-field { margin-top: 18px; }
+.home-assistant-alert-card textarea { box-sizing: border-box; width: 100%; resize: vertical; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; line-height: 1.45; }
+.home-assistant-alert-card details { margin-top: 12px; }
+.home-assistant-alert-card summary { cursor: pointer; color: var(--accent-text); }
+.home-assistant-alert-card pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .home-assistant-trust-row { margin: 0; }
 .home-assistant-proposals { display: grid; gap: 12px; margin-top: 18px; }
 .home-assistant-proposal { padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }

@@ -2,6 +2,7 @@
   const id = name => document.getElementById(`home-assistant-${name}`);
   const base = '/api/addons/home-assistant';
   let entityRows = [];
+  let alertSettingsSaving = false;
 
   async function api(path, options = {}) {
     const response = await fetch(base + path, options);
@@ -19,6 +20,28 @@
     id('url').value = state.base_url;
     id('badge').textContent = state.connected ? 'Connected' : state.has_token ? 'Ready' : 'Token needed';
     id('trusted').checked = state.trusted;
+    if (!alertSettingsSaving) {
+      id('alerts-enabled').checked = state.alerts_enabled;
+      id('alerts-speak').checked = state.alerts_speak;
+      id('alerts-resolved').checked = state.alerts_resolved;
+    }
+    if (document.activeElement !== id('alert-prompt')) id('alert-prompt').value = state.alert_prompt || '';
+    const alertLabels = {listening: 'Listening', connecting: 'Connecting…', error: 'Needs attention', off: 'Off'};
+    id('alert-badge').textContent = alertLabels[state.alert_state] || 'Off';
+    id('test-alert').disabled = !state.alerts_enabled;
+    if (state.alert_error) {
+      id('alert-status').textContent = state.alert_error;
+      id('alert-status').dataset.type = 'error';
+    } else if (state.alert_state === 'listening') {
+      id('alert-status').textContent = `Listening for alert.* changes and ${state.alert_event_type} events.`;
+      id('alert-status').dataset.type = 'success';
+    } else if (state.alerts_enabled) {
+      id('alert-status').textContent = 'Connecting to Home Assistant’s live event stream…';
+      id('alert-status').dataset.type = '';
+    } else {
+      id('alert-status').textContent = 'Alert relay is off.';
+      id('alert-status').dataset.type = '';
+    }
     id('review-note').textContent = state.trusted
       ? 'Trust PETEY is on. Requested Assist actions run immediately.'
       : 'Device changes wait here for approval and expire after ten minutes.';
@@ -154,6 +177,31 @@
     }
   }
 
+  async function saveAlertSettings(button) {
+    alertSettingsSaving = true;
+    button.disabled = true;
+    try {
+      const state = await api('/alerts', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          enabled: id('alerts-enabled').checked,
+          speak: id('alerts-speak').checked,
+          resolved: id('alerts-resolved').checked,
+          prompt: id('alert-prompt').value,
+        }),
+      });
+      alertSettingsSaving = false;
+      render(state);
+      setStatus('Home Assistant alert relay settings saved.', 'success');
+    } catch (error) {
+      alertSettingsSaving = false;
+      setStatus(error.message, 'error');
+      await refresh().catch(() => {});
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   id('save-connect').addEventListener('click', () => run(id('save-connect'), async () => {
     setStatus('Saving and connecting…');
     await api('/config', {
@@ -192,6 +240,14 @@
       setStatus(trusted ? 'Trusted device actions enabled.' : 'Device changes require review.', 'success');
     });
   });
+  id('save-alerts').addEventListener('click', () => saveAlertSettings(id('save-alerts')));
+  for (const control of [id('alerts-enabled'), id('alerts-speak'), id('alerts-resolved')]) {
+    control.addEventListener('change', () => saveAlertSettings(control));
+  }
+  id('test-alert').addEventListener('click', () => run(id('test-alert'), async () => {
+    const result = await api('/alerts/test', {method: 'POST'});
+    setStatus(result.message || 'Test alert queued for PETEY.', 'success');
+  }));
   id('refresh').addEventListener('click', () => run(id('refresh'), refresh));
   id('scan-entities').addEventListener('click', () => run(id('scan-entities'), async () => {
     id('vocabulary-status').textContent = 'Reading exposed entities…';
@@ -215,4 +271,7 @@
   window.addEventListener('petey:view', event => {
     if (event.detail.view === 'addon-home-assistant') run(id('refresh'), refresh);
   });
+  window.setInterval(() => {
+    if (location.hash === '#addon-home-assistant') refresh().catch(() => {});
+  }, 5000);
 })();

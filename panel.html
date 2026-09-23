@@ -19,6 +19,32 @@
     <p id="home-assistant-detail" class="hint"></p>
   </section>
 
+  <section class="settings-card home-assistant-alert-card">
+    <div class="card-heading">
+      <div><h3>Alert relay</h3><p>Let Home Assistant send live updates to PETEY. PETEY replies in chat and can announce them aloud.</p></div>
+      <span id="home-assistant-alert-badge" class="provider-badge">Off</span>
+    </div>
+    <label class="preference-row"><span><strong>Relay Home Assistant alerts</strong><small>Listen for active and cleared <code>alert.*</code> entities plus custom <code>petey_alert</code> events.</small></span><input id="home-assistant-alerts-enabled" type="checkbox" role="switch"></label>
+    <label class="preference-row"><span><strong>Speak relayed alerts</strong><small>PETEY still respects the speaker mute button on each device.</small></span><input id="home-assistant-alerts-speak" type="checkbox" role="switch"></label>
+    <label class="preference-row"><span><strong>Announce resolved alerts</strong><small>Also report when an <code>alert.*</code> entity returns to idle.</small></span><input id="home-assistant-alerts-resolved" type="checkbox" role="switch"></label>
+    <label class="full-field"><span>PETEY alert prompt</span><textarea id="home-assistant-alert-prompt" rows="7" maxlength="4000" spellcheck="true"></textarea></label>
+    <p class="hint">Available fields: <code>{title}</code>, <code>{message}</code>, <code>{status}</code>, and <code>{entity_id}</code>.</p>
+    <div class="inline-actions">
+      <button id="home-assistant-save-alerts" class="primary-button" type="button">Save alert relay</button>
+      <button id="home-assistant-test-alert" class="secondary-button" type="button">Send test alert</button>
+    </div>
+    <p id="home-assistant-alert-status" class="wide-status" role="status"></p>
+    <details>
+      <summary>Send a custom alert from an automation</summary>
+      <p class="hint">Add a <strong>Fire Manual Event</strong> action in Home Assistant, or paste this action into YAML:</p>
+      <pre class="rag-results">- event: petey_alert
+  event_data:
+    title: "Front door"
+    message: "The front door has been open for five minutes."
+    speak: true</pre>
+    </details>
+  </section>
+
   <section class="settings-card">
     <label class="preference-row home-assistant-trust-row"><span><strong>Trust PETEY with device changes</strong><small>Run Home Assistant Assist actions immediately when your request clearly asks for them.</small></span><input id="home-assistant-trusted" type="checkbox" role="switch"></label>
     <p class="hint">When off, state reads run immediately while device changes wait below for approval. Unknown MCP tools are never exposed.</p>

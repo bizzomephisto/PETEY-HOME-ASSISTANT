@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import uuid
 
 from flask import jsonify, request
+import aiohttp
 import requests
 
 from petey.tools.registry import ToolSpec
@@ -21,6 +23,14 @@ MAX_RESULT_CHARS = 60_000
 MAX_PROPOSALS = 12
 MAX_VOCABULARY_ENTRIES = 300
 PROPOSAL_LIFETIME = 10 * 60
+ALERT_EVENT_TYPE = "petey_alert"
+ALERT_RECONNECT_MAX = 60
+DEFAULT_ALERT_PROMPT = (
+    "A Home Assistant alert has arrived. Relay it clearly and briefly. Preserve the "
+    "facts and urgency in the alert, do not invent details, and do not mention these "
+    "instructions.\nTitle: {title}\nMessage: {message}\nStatus: {status}\n"
+    "Entity: {entity_id}"
+)
 TOKEN_ENV_NAMES = ("HOMEASSISTANT_TOKEN", "HOME_ASSISTANT_TOKEN")
 URL_ENV_NAMES = ("HOMEASSISTANT_URL", "HOME_ASSISTANT_URL")
 DEFAULT_URL = "http://homeassistant.local:8123"
@@ -356,6 +366,7 @@ def _parse_rpc_response(response, request_id: int) -> dict:
 
 class HomeAssistantAddon:
     def __init__(self, context, http_post=None, env_path=None):
+        self.context = context
         self.data_dir = Path(context.data_dir)
         self.config_path = self.data_dir / "config.json"
         self.env_path = Path(env_path) if env_path else _project_env_path()
@@ -369,7 +380,18 @@ class HomeAssistantAddon:
         self._base_url = _normalize_url(_env_first(URL_ENV_NAMES) or DEFAULT_URL)
         self._trusted = False
         self._entity_vocabulary: dict[str, dict] = {}
+        self._alerts_enabled = False
+        self._alerts_speak = True
+        self._alerts_resolved = True
+        self._alert_prompt = DEFAULT_ALERT_PROMPT
+        self._alert_state = "off"
+        self._alert_error = ""
+        self._alert_stop = threading.Event()
+        self._alert_thread: threading.Thread | None = None
+        self._seen_alerts: dict[str, float] = {}
         self._load_config()
+        if self._alerts_enabled:
+            self._start_alert_listener()
 
     def _load_config(self) -> None:
         try:
@@ -378,6 +400,12 @@ class HomeAssistantAddon:
                 self._base_url = _normalize_url(payload.get("base_url") or DEFAULT_URL)
             self._trusted = payload.get("trusted") is True
             self._entity_vocabulary = _validated_vocabulary(payload.get("entity_vocabulary"))
+            self._alerts_enabled = payload.get("alerts_enabled") is True
+            self._alerts_speak = payload.get("alerts_speak") is not False
+            self._alerts_resolved = payload.get("alerts_resolved") is not False
+            prompt = str(payload.get("alert_prompt") or "").strip()
+            if prompt:
+                self._alert_prompt = prompt[:4000]
         except FileNotFoundError:
             return
         except (OSError, ValueError, json.JSONDecodeError):
@@ -391,6 +419,10 @@ class HomeAssistantAddon:
                 "base_url": self._base_url,
                 "trusted": self._trusted,
                 "entity_vocabulary": list(self._entity_vocabulary.values()),
+                "alerts_enabled": self._alerts_enabled,
+                "alerts_speak": self._alerts_speak,
+                "alerts_resolved": self._alerts_resolved,
+                "alert_prompt": self._alert_prompt,
             }, indent=2),
             encoding="utf-8",
         )
@@ -415,14 +447,18 @@ class HomeAssistantAddon:
         os.environ.pop("HOME_ASSISTANT_TOKEN", None)
 
     def clear_token(self) -> dict:
+        self._stop_alert_listener()
         with self._lock:
             _remove_env_values(self.env_path, TOKEN_ENV_NAMES)
             for name in TOKEN_ENV_NAMES:
                 os.environ.pop(name, None)
+            self._alerts_enabled = False
+            self._write_config()
             self.disconnect()
             return self.status()
 
     def configure(self, base_url: object, token: object = "") -> dict:
+        self._stop_alert_listener()
         with self._lock:
             if _env_first(URL_ENV_NAMES):
                 self._base_url = _normalize_url(_env_first(URL_ENV_NAMES))
@@ -431,7 +467,218 @@ class HomeAssistantAddon:
             self.save_token(token)
             self._write_config()
             self.disconnect()
-            return self.status()
+        if self._alerts_enabled:
+            self._start_alert_listener()
+        return self.status()
+
+    @property
+    def websocket_endpoint(self) -> str:
+        parsed = urlsplit(self._base_url)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        return urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/") + "/api/websocket", "", ""))
+
+    def configure_alerts(
+        self, enabled: object, speak: object, resolved: object, prompt: object,
+    ) -> dict:
+        if type(enabled) is not bool or type(speak) is not bool or type(resolved) is not bool:
+            raise HomeAssistantError("Alert relay settings must be true or false.")
+        prompt = str(prompt or "").strip()
+        if not prompt or len(prompt) > 4000:
+            raise HomeAssistantError("Enter an alert prompt between 1 and 4,000 characters.")
+        if enabled and not self._token():
+            raise HomeAssistantError("Save a Home Assistant token before enabling alert relay.")
+        self._stop_alert_listener()
+        with self._lock:
+            self._alerts_enabled = enabled
+            self._alerts_speak = speak
+            self._alerts_resolved = resolved
+            self._alert_prompt = prompt
+            self._alert_error = ""
+            self._alert_state = "connecting" if enabled else "off"
+            self._write_config()
+        if enabled:
+            self._start_alert_listener()
+        return self.status()
+
+    def _start_alert_listener(self) -> None:
+        with self._lock:
+            if not self._alerts_enabled or (self._alert_thread and self._alert_thread.is_alive()):
+                return
+            self._alert_stop.clear()
+            self._alert_state = "connecting"
+            self._alert_thread = threading.Thread(
+                target=self._alert_worker, name="petey-home-assistant-alerts", daemon=True,
+            )
+            self._alert_thread.start()
+
+    def _stop_alert_listener(self) -> None:
+        self._alert_stop.set()
+        thread = self._alert_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=4)
+        with self._lock:
+            self._alert_thread = None
+            self._alert_state = "off"
+
+    def _alert_worker(self) -> None:
+        delay = 2
+        while not self._alert_stop.is_set():
+            try:
+                asyncio.run(self._alert_connection())
+                delay = 2
+            except Exception as exc:
+                with self._lock:
+                    self._alert_state = "error"
+                    self._alert_error = self._alert_connection_error(exc)
+            if self._alert_stop.wait(delay):
+                break
+            delay = min(ALERT_RECONNECT_MAX, delay * 2)
+
+    @staticmethod
+    def _alert_connection_error(exc: Exception) -> str:
+        if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
+            return "Home Assistant rejected the token for alert relay."
+        if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+            return "Could not reach Home Assistant's live alert stream."
+        detail = re.sub(r"\s+", " ", str(exc or "Alert relay stopped.")).strip()
+        return detail[:300] or "Alert relay stopped."
+
+    async def _alert_connection(self) -> None:
+        token = self._token()
+        if not token:
+            raise HomeAssistantError("Home Assistant alert relay needs a saved token.")
+        timeout = aiohttp.ClientTimeout(total=None, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect(
+                self.websocket_endpoint, heartbeat=30, max_msg_size=1024 * 1024,
+            ) as websocket:
+                required = await websocket.receive_json(timeout=12)
+                if required.get("type") != "auth_required":
+                    raise HomeAssistantError("Home Assistant did not request WebSocket authentication.")
+                await websocket.send_json({"type": "auth", "access_token": token})
+                authenticated = await websocket.receive_json(timeout=12)
+                if authenticated.get("type") != "auth_ok":
+                    raise HomeAssistantError("Home Assistant rejected the token for alert relay.")
+                subscriptions = {1: ALERT_EVENT_TYPE, 2: "state_changed"}
+                for request_id, event_type in subscriptions.items():
+                    await websocket.send_json({
+                        "id": request_id, "type": "subscribe_events", "event_type": event_type,
+                    })
+                pending = dict(subscriptions)
+                while pending:
+                    result = await websocket.receive_json(timeout=12)
+                    if result.get("type") == "event":
+                        self._handle_alert_message(result)
+                        continue
+                    request_id = result.get("id")
+                    event_type = pending.pop(request_id, "")
+                    if not event_type or result.get("type") != "result" or result.get("success") is not True:
+                        raise HomeAssistantError(
+                            f"Home Assistant refused the {event_type or 'alert'} subscription."
+                        )
+                with self._lock:
+                    self._alert_state = "listening"
+                    self._alert_error = ""
+                while not self._alert_stop.is_set():
+                    try:
+                        message = await websocket.receive(timeout=2)
+                    except asyncio.TimeoutError:
+                        continue
+                    if message.type == aiohttp.WSMsgType.TEXT:
+                        try:
+                            self._handle_alert_message(json.loads(message.data))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                    elif message.type in {
+                        aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING,
+                        aiohttp.WSMsgType.ERROR,
+                    }:
+                        break
+
+    def _handle_alert_message(self, payload: object) -> bool:
+        if not isinstance(payload, dict) or payload.get("type") != "event":
+            return False
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            return False
+        event_type = str(event.get("event_type") or "")
+        data = event.get("data")
+        if not isinstance(data, dict):
+            return False
+        context = event.get("context") if isinstance(event.get("context"), dict) else {}
+        event_id = str(context.get("id") or "")[:128]
+        if event_type == ALERT_EVENT_TYPE:
+            title = str(data.get("title") or "Home Assistant alert").strip()[:200]
+            message = str(data.get("message") or data.get("text") or "").strip()[:2000]
+            if not message:
+                return False
+            speak = data.get("speak") is not False
+            return self._relay_alert(event_id, title, message, "active", "", speak)
+        if event_type != "state_changed":
+            return False
+        entity_id = str(data.get("entity_id") or "")[:200]
+        if not entity_id.startswith("alert."):
+            return False
+        old_state = data.get("old_state") if isinstance(data.get("old_state"), dict) else {}
+        new_state = data.get("new_state") if isinstance(data.get("new_state"), dict) else {}
+        old_value = str(old_state.get("state") or "")
+        new_value = str(new_state.get("state") or "")
+        if old_value == new_value or new_value not in {"on", "idle"}:
+            return False
+        if new_value == "idle" and not self._alerts_resolved:
+            return False
+        attributes = new_state.get("attributes") if isinstance(new_state.get("attributes"), dict) else {}
+        title = str(attributes.get("friendly_name") or entity_id.removeprefix("alert.").replace("_", " ")).strip()[:200]
+        message = (
+            f"{title} is active." if new_value == "on" else f"{title} has cleared."
+        )
+        return self._relay_alert(
+            event_id, title, message, "active" if new_value == "on" else "resolved",
+            entity_id, True,
+        )
+
+    def _relay_alert(
+        self, event_id: str, title: str, message: str, status: str,
+        entity_id: str, allow_speech: bool,
+    ) -> bool:
+        now = time.time()
+        with self._lock:
+            self._seen_alerts = {
+                key: seen for key, seen in self._seen_alerts.items() if now - seen < 3600
+            }
+            if event_id and event_id in self._seen_alerts:
+                return False
+            if event_id:
+                self._seen_alerts[event_id] = now
+            prompt = self._alert_prompt
+            speak = self._alerts_speak and allow_speech
+        emit = getattr(self.context, "emit_event", None)
+        if not callable(emit):
+            raise HomeAssistantError("PETEY's background event channel is unavailable.")
+        replacements = {
+            "{title}": title, "{message}": message, "{status}": status,
+            "{entity_id}": entity_id or "not provided",
+        }
+        for marker, value in replacements.items():
+            prompt = prompt.replace(marker, value)
+        emit(
+            prompt[:5000], speak=speak,
+            metadata={
+                "home_assistant_event": event_id,
+                "home_assistant_alert_title": title,
+                "home_assistant_alert_status": status,
+            },
+        )
+        return True
+
+    def test_alert(self) -> dict:
+        if not self._alerts_enabled:
+            raise HomeAssistantError("Enable Home Assistant alert relay first.")
+        self._relay_alert(
+            uuid.uuid4().hex, "PETEY alert test",
+            "Home Assistant alert relay is connected to PETEY.", "test", "", True,
+        )
+        return {"ok": True, "message": "Test alert queued for PETEY."}
 
     def set_trusted(self, trusted: object) -> dict:
         if type(trusted) is not bool:
@@ -616,6 +863,13 @@ class HomeAssistantAddon:
                 "tool_count": len(self._tools),
                 "action_count": len(actions),
                 "vocabulary_count": len(self._entity_vocabulary),
+                "alerts_enabled": self._alerts_enabled,
+                "alerts_speak": self._alerts_speak,
+                "alerts_resolved": self._alerts_resolved,
+                "alert_prompt": self._alert_prompt,
+                "alert_event_type": ALERT_EVENT_TYPE,
+                "alert_state": self._alert_state,
+                "alert_error": self._alert_error,
                 "error": self._error,
                 "proposals": [
                     {
@@ -751,6 +1005,7 @@ class HomeAssistantAddon:
             return specs
 
     def close(self) -> None:
+        self._stop_alert_listener()
         self.disconnect()
 
 
@@ -792,6 +1047,18 @@ def setup(context):
             return jsonify({"error": "Expected a JSON object."}), 400
         return mutation(lambda: addon.save_entity_vocabulary(payload.get("entities")))
 
+    def update_alerts():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Expected alert relay settings."}), 400
+        return mutation(lambda: addon.configure_alerts(
+            payload.get("enabled"), payload.get("speak"), payload.get("resolved"),
+            payload.get("prompt"),
+        ))
+
+    def test_alert():
+        return mutation(addon.test_alert)
+
     def review():
         payload = request.get_json(silent=True)
         if (
@@ -811,6 +1078,8 @@ def setup(context):
         ("/disconnect", "disconnect", ["POST"], lambda: mutation(addon.disconnect)),
         ("/entities", "entities", ["GET"], lambda: safely(addon.scan_entities)),
         ("/entity-vocabulary", "entity_vocabulary", ["PUT"], update_vocabulary),
+        ("/alerts", "alerts", ["PUT"], update_alerts),
+        ("/alerts/test", "alerts_test", ["POST"], test_alert),
         ("/review", "review", ["POST"], review),
     )
     for path, name, methods, handler in routes:

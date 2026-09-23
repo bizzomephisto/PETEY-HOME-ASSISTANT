@@ -86,6 +86,12 @@ class FakeHTTP:
 
 
 class HomeAssistantAddonTests(unittest.TestCase):
+    def test_alert_switches_save_immediately_without_status_refresh_reset(self):
+        script = (ROOT / "panel.js").read_text(encoding="utf-8")
+        self.assertIn("let alertSettingsSaving = false", script)
+        self.assertIn("control.addEventListener('change', () => saveAlertSettings(control))", script)
+        self.assertIn("if (!alertSettingsSaving)", script)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -97,11 +103,81 @@ class HomeAssistantAddonTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.http = FakeHTTP()
+        self.emit_event = MagicMock(return_value={"queued": True})
         self.env_path = Path(self.directory.name) / ".env"
         self.env_path.write_text("GEMINI_API_KEY=keep-me\n", encoding="utf-8")
         self.addon = MODULE.HomeAssistantAddon(
-            SimpleNamespace(data_dir=Path(self.directory.name)), self.http, self.env_path
+            SimpleNamespace(data_dir=Path(self.directory.name), emit_event=self.emit_event),
+            self.http, self.env_path,
         )
+
+    def test_custom_alert_event_is_relayed_once_and_respects_speech_override(self):
+        self.addon._alerts_enabled = True
+        payload = {
+            "type": "event",
+            "event": {
+                "event_type": "petey_alert",
+                "context": {"id": "event-one"},
+                "data": {
+                    "title": "Front door",
+                    "message": "The front door has been open for five minutes.",
+                    "speak": False,
+                },
+            },
+        }
+        self.assertTrue(self.addon._handle_alert_message(payload))
+        self.assertFalse(self.addon._handle_alert_message(payload))
+        self.emit_event.assert_called_once()
+        prompt = self.emit_event.call_args.args[0]
+        self.assertIn("Front door", prompt)
+        self.assertIn("five minutes", prompt)
+        self.assertFalse(self.emit_event.call_args.kwargs["speak"])
+        self.assertEqual(
+            self.emit_event.call_args.kwargs["metadata"]["home_assistant_alert_status"],
+            "active",
+        )
+
+    def test_alert_entities_relay_active_and_optional_resolved_states(self):
+        self.addon._alerts_enabled = True
+        active = {
+            "type": "event",
+            "event": {
+                "event_type": "state_changed", "context": {"id": "active-one"},
+                "data": {
+                    "entity_id": "alert.garage_door",
+                    "old_state": {"state": "idle"},
+                    "new_state": {
+                        "state": "on", "attributes": {"friendly_name": "Garage door"},
+                    },
+                },
+            },
+        }
+        self.assertTrue(self.addon._handle_alert_message(active))
+        self.assertIn("Garage door is active", self.emit_event.call_args.args[0])
+        resolved = json.loads(json.dumps(active))
+        resolved["event"]["context"]["id"] = "resolved-one"
+        resolved["event"]["data"]["old_state"]["state"] = "on"
+        resolved["event"]["data"]["new_state"]["state"] = "idle"
+        self.assertTrue(self.addon._handle_alert_message(resolved))
+        self.assertIn("Garage door has cleared", self.emit_event.call_args.args[0])
+        self.addon._alerts_resolved = False
+        resolved["event"]["context"]["id"] = "resolved-two"
+        self.assertFalse(self.addon._handle_alert_message(resolved))
+
+    def test_alert_settings_persist_and_use_home_assistant_websocket(self):
+        with patch.object(self.addon, "_start_alert_listener") as start:
+            status = self.addon.configure_alerts(
+                True, True, False, "Alert {title}: {message} ({status})",
+            )
+        self.assertTrue(status["alerts_enabled"])
+        self.assertFalse(status["alerts_resolved"])
+        self.assertEqual(
+            self.addon.websocket_endpoint, "ws://homeassistant.local:8123/api/websocket",
+        )
+        start.assert_called_once()
+        saved = json.loads((Path(self.directory.name) / "config.json").read_text())
+        self.assertTrue(saved["alerts_enabled"])
+        self.assertEqual(saved["alert_prompt"], "Alert {title}: {message} ({status})")
 
     def test_pasted_token_is_stored_in_dotenv_and_never_returned(self):
         self.addon.configure("http://homeassistant.local:8123", "replacement.token_value-1")
@@ -278,6 +354,7 @@ class HomeAssistantAddonTests(unittest.TestCase):
             app=app, addon_id="home-assistant", addon_dir=ROOT,
             data_dir=Path(self.directory.name), state=MagicMock(), memory=MagicMock(),
             gallery=MagicMock(), runtime=MagicMock(), get_media_jobs=MagicMock(),
+            emit_event=self.emit_event,
         )
         with patch.object(MODULE.requests, "post", side_effect=self.http):
             addon = MODULE.setup(context)
@@ -299,6 +376,15 @@ class HomeAssistantAddonTests(unittest.TestCase):
         )
         self.assertEqual(vocabulary.status_code, 200)
         self.assertEqual(vocabulary.json["vocabulary_count"], 1)
+        with patch.object(addon, "_start_alert_listener"):
+            alerts = client.put("/api/addons/home-assistant/alerts", json={
+                "enabled": True, "speak": True, "resolved": True,
+                "prompt": "Say {title}: {message}",
+            })
+        self.assertEqual(alerts.status_code, 200)
+        test_alert = client.post("/api/addons/home-assistant/alerts/test")
+        self.assertEqual(test_alert.status_code, 200)
+        self.assertTrue(self.emit_event.called)
 
 
 if __name__ == "__main__":
